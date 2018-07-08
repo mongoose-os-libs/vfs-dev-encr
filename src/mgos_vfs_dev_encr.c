@@ -59,10 +59,13 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
        *key_dev_opts = NULL;
   struct json_token algo_tok = JSON_INVALID_TOKEN;
   struct json_token kdo_json_tok = JSON_INVALID_TOKEN;
+  int testing = false;
   json_scanf(
       opts, strlen(opts),
-      "{dev: %Q, algo: %T, key_dev: %Q, key_dev_type: %Q, key_dev_opts: %T}",
-      &dev_name, &algo_tok, &key_dev_name, &key_dev_type, &kdo_json_tok);
+      ("{dev: %Q, algo: %T, key_dev: %Q, key_dev_type: %Q, key_dev_opts: %T, "
+       "testing: %B}"),
+      &dev_name, &algo_tok, &key_dev_name, &key_dev_type, &kdo_json_tok,
+      &testing);
   if (dev_name == NULL) {
     LOG(LL_ERROR, ("Device name is required"));
     goto out;
@@ -121,6 +124,21 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
       LOG(LL_ERROR, ("Key device must yield the same key every time"));
       res = MGOS_VFS_DEV_ERR_INVAL;
       goto out;
+    }
+    /* Perform basic sanity check on the key. */
+    {
+      uint8_t i, n;
+      for (i = 1, n = 0; i < dd->key_len; i++) {
+        if (key1[i] == key1[i - 1]) n++;
+      }
+      if (n >= dd->key_len - 4) {
+        LOG(LL_WARN, ("Encryption key is unset or trivial!"));
+        if (!testing) {
+          LOG(LL_ERROR, ("Bad key, set 'testing: true' to override."));
+          res = MGOS_VFS_DEV_ERR_INVAL;
+          goto out;
+        }
+      }
     }
   }
 
