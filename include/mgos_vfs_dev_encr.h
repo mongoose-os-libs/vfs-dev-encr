@@ -19,11 +19,18 @@
 
 #include <stdbool.h>
 
+#include "mgos_vfs_dev.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define MGOS_VFS_DEV_TYPE_ENCR "encr"
+
+enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
+                                    struct mgos_vfs_dev *io_dev,
+                                    struct mgos_vfs_dev *key_dev, int key_len,
+                                    bool testing);
 
 #ifdef __cplusplus
 }

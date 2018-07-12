@@ -35,9 +35,9 @@
 #endif
 
 struct mgos_vfs_dev_encr_data {
-  struct mgos_vfs_dev *dev;
+  struct mgos_vfs_dev *io_dev;
   struct mgos_vfs_dev *key_dev;
-  uint16_t key_len;
+  uint8_t key_len;
 };
 
 static enum mgos_vfs_dev_err encr_get_key(struct mgos_vfs_dev_encr_data *dd,
@@ -49,17 +49,66 @@ static void __attribute__((noinline)) zeroize(void *p, size_t len) {
   memset(p, 0, len);
 }
 
-static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
-                                                    const char *opts) {
-  enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
+enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
+                                    struct mgos_vfs_dev *io_dev,
+                                    struct mgos_vfs_dev *key_dev, int key_len,
+                                    bool testing) {
+  bool res = MGOS_VFS_DEV_ERR_INVAL;
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) calloc(1, sizeof(*dd));
   uint8_t key1[ENCR_MAX_KEY_LEN], key2[ENCR_MAX_KEY_LEN];
+  if (dd == NULL) {
+    res = MGOS_VFS_DEV_ERR_NOMEM;
+    goto out;
+  }
+  dd->io_dev = io_dev;
+  dd->key_dev = key_dev;
+  dd->key_len = key_len;
+  {
+    if ((res = encr_get_key(dd, key1)) != 0) goto out;
+    if ((res = encr_get_key(dd, key2)) != 0) goto out;
+#if MGOS_VFS_DEV_ENCR_DEBUG_KEY
+    mg_hexdumpf(stderr, key1, key_len);
+#endif
+    if (memcmp(key1, key2, key_len) != 0) {
+      LOG(LL_ERROR, ("Key device must yield the same key every time"));
+      res = MGOS_VFS_DEV_ERR_INVAL;
+      goto out;
+    }
+    /* Perform basic sanity check on the key. */
+    {
+      uint8_t i, n;
+      for (i = 1, n = 0; i < key_len; i++) {
+        if (key1[i] == key1[i - 1]) n++;
+      }
+      if (n >= key_len - 4) {
+        LOG(LL_WARN, ("Encryption key is unset or trivial!"));
+        if (!testing) {
+          LOG(LL_ERROR, ("Bad key, set 'testing: true' to override."));
+          res = MGOS_VFS_DEV_ERR_INVAL;
+          goto out;
+        }
+      }
+    }
+  }
+  dev->dev_data = dd;
+  res = MGOS_VFS_DEV_ERR_NONE;
+out:
+  if (res != MGOS_VFS_DEV_ERR_NONE) free(dd);
+  zeroize(key1, sizeof(key1));
+  zeroize(key2, sizeof(key2));
+  return res;
+}
+
+enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
+                                             const char *opts) {
+  enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
   char *dev_name = NULL, *key_dev_name = NULL, *key_dev_type = NULL,
        *key_dev_opts = NULL;
+  struct mgos_vfs_dev *io_dev = NULL, *key_dev = NULL;
   struct json_token algo_tok = JSON_INVALID_TOKEN;
   struct json_token kdo_json_tok = JSON_INVALID_TOKEN;
-  int testing = false;
+  int key_len, testing = false;
   json_scanf(
       opts, strlen(opts),
       ("{dev: %Q, algo: %T, key_dev: %Q, key_dev_type: %Q, key_dev_opts: %T, "
@@ -74,14 +123,14 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
     LOG(LL_ERROR, ("Key device name or type are required"));
     goto out;
   }
-  dd->dev = mgos_vfs_dev_open(dev_name);
-  if (dd->dev == NULL) {
+  io_dev = mgos_vfs_dev_open(dev_name);
+  if (io_dev == NULL) {
     LOG(LL_ERROR, ("Unable to open %s", dev_name));
     goto out;
   }
   if (key_dev_name != NULL) {
-    dd->key_dev = mgos_vfs_dev_open(key_dev_name);
-    if (dd->key_dev == NULL) {
+    key_dev = mgos_vfs_dev_open(key_dev_name);
+    if (key_dev == NULL) {
       LOG(LL_ERROR, ("Unable to open key device %s", key_dev_name));
       goto out;
     }
@@ -96,8 +145,8 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
       }
       kdo = key_dev_opts;
     }
-    dd->key_dev = mgos_vfs_dev_create(key_dev_type, kdo);
-    if (dd->key_dev == NULL) {
+    key_dev = mgos_vfs_dev_create(key_dev_type, kdo);
+    if (key_dev == NULL) {
       LOG(LL_ERROR, ("Unable to create key device %s %s", key_dev_type, kdo));
       goto out;
     }
@@ -105,58 +154,29 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
   struct mg_str algo = mg_mk_str_n(algo_tok.ptr, algo_tok.len);
   if (algo.len == 0) algo = mg_mk_str("AES-128");
   if (mg_vcasecmp(&algo, "AES-128") == 0) {
-    dd->key_len = 16;
+    key_len = 16;
   } else if (mg_vcasecmp(&algo, "AES-192") == 0) {
-    dd->key_len = 24;
+    key_len = 24;
   } else if (mg_vcasecmp(&algo, "AES-256") == 0) {
-    dd->key_len = 32;
+    key_len = 32;
   } else {
     LOG(LL_ERROR, ("Unknown algo %.*s", (int) algo.len, algo.p));
     goto out;
   }
-  {
-    if ((res = encr_get_key(dd, key1)) != 0) goto out;
-    if ((res = encr_get_key(dd, key2)) != 0) goto out;
-#if MGOS_VFS_DEV_ENCR_DEBUG_KEY
-    mg_hexdumpf(stderr, key1, dd->key_len);
-#endif
-    if (memcmp(key1, key2, dd->key_len) != 0) {
-      LOG(LL_ERROR, ("Key device must yield the same key every time"));
-      res = MGOS_VFS_DEV_ERR_INVAL;
-      goto out;
-    }
-    /* Perform basic sanity check on the key. */
-    {
-      uint8_t i, n;
-      for (i = 1, n = 0; i < dd->key_len; i++) {
-        if (key1[i] == key1[i - 1]) n++;
-      }
-      if (n >= dd->key_len - 4) {
-        LOG(LL_WARN, ("Encryption key is unset or trivial!"));
-        if (!testing) {
-          LOG(LL_ERROR, ("Bad key, set 'testing: true' to override."));
-          res = MGOS_VFS_DEV_ERR_INVAL;
-          goto out;
-        }
-      }
-    }
-  }
 
-  dev->dev_data = dd;
-  res = MGOS_VFS_DEV_ERR_NONE;
-  LOG(LL_INFO, ("Algo %.*s, key dev %p", (int) algo.len, algo.p, dd->key_dev));
+  LOG(LL_INFO, ("Algo %.*s, key dev %p", (int) algo.len, algo.p, key_dev));
+
+  res = encr_dev_init(dev, io_dev, key_dev, key_len, testing);
 
 out:
-  if (res != 0 && dd != NULL) {
-    if (dd->dev != NULL) mgos_vfs_dev_close(dd->dev);
-    free(dd);
+  if (res != 0) {
+    if (io_dev != NULL) mgos_vfs_dev_close(io_dev);
+    if (key_dev != NULL) mgos_vfs_dev_close(key_dev);
   }
   free(dev_name);
   free(key_dev_name);
   free(key_dev_type);
   free(key_dev_opts);
-  zeroize(key1, sizeof(key1));
-  zeroize(key2, sizeof(key2));
   return res;
 }
 
@@ -175,7 +195,9 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_read(struct mgos_vfs_dev *dev,
                    (unsigned long) offset));
     goto out;
   }
-  if ((res = dd->dev->ops->read(dd->dev, offset, len, dst)) != 0) goto out;
+  if ((res = dd->io_dev->ops->read(dd->io_dev, offset, len, dst)) != 0) {
+    goto out;
+  }
   if ((res = encr_get_key(dd, key)) != 0) goto out;
   mbedtls_aes_init(&aes_ctx);
   aes_ctx_valid = true;
@@ -245,7 +267,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
     off += ENCR_BLOCK_SIZE;
     l += ENCR_BLOCK_SIZE;
   }
-  res = dd->dev->ops->write(dd->dev, offset, len, tmp);
+  res = dd->io_dev->ops->write(dd->io_dev, offset, len, tmp);
 out:
   if (aes_ctx_valid) mbedtls_aes_free(&aes_ctx);
   zeroize(&aes_ctx, sizeof(aes_ctx));
@@ -259,28 +281,30 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_erase(struct mgos_vfs_dev *dev,
                                                      size_t len) {
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
-  return dd->dev->ops->erase(dd->dev, offset, len);
+  return dd->io_dev->ops->erase(dd->io_dev, offset, len);
 }
 
 static size_t mgos_vfs_dev_encr_get_size(struct mgos_vfs_dev *dev) {
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
-  return dd->dev->ops->get_size(dd->dev);
+  return dd->io_dev->ops->get_size(dd->io_dev);
 }
 
 static enum mgos_vfs_dev_err mgos_vfs_dev_encr_close(struct mgos_vfs_dev *dev) {
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
   enum mgos_vfs_dev_err res =
-      (mgos_vfs_dev_close(dd->dev) ? MGOS_VFS_DEV_ERR_NONE
-                                   : MGOS_VFS_DEV_ERR_IO);
+      (mgos_vfs_dev_close(dd->io_dev) ? MGOS_VFS_DEV_ERR_NONE
+                                      : MGOS_VFS_DEV_ERR_IO);
   mgos_vfs_dev_close(dd->key_dev);
   free(dd);
   return res;
 }
 
-static const struct mgos_vfs_dev_ops mgos_vfs_dev_encr_ops = {
+const struct mgos_vfs_dev_ops mgos_vfs_dev_encr_ops = {
+#ifndef MGOS_NO_MAIN
     .open = mgos_vfs_dev_encr_open,
+#endif
     .read = mgos_vfs_dev_encr_read,
     .write = mgos_vfs_dev_encr_write,
     .erase = mgos_vfs_dev_encr_erase,
