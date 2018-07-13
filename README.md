@@ -11,7 +11,7 @@
 
 ## Key source
 
-This library does not store key in memory. Instead, a separate _key device_ is used to obtain key when required.
+Key can be supplied directly (as the `key` option) but a better approach is to use a _key device_ to obtain the key when required.
 
 Key device can be any other VFS device that supports reads. It can be an existing device (`key_dev: name`) or created in-situ (`key_dev_type` + `key_dev_opts`).
 

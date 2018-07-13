@@ -37,11 +37,16 @@
 struct mgos_vfs_dev_encr_data {
   struct mgos_vfs_dev *io_dev;
   struct mgos_vfs_dev *key_dev;
+  uint8_t *key;
   uint8_t key_len;
 };
 
 static enum mgos_vfs_dev_err encr_get_key(struct mgos_vfs_dev_encr_data *dd,
                                           void *key) {
+  if (dd->key != NULL) {
+    memcpy(key, dd->key, dd->key_len);
+    return MGOS_VFS_DEV_ERR_NONE;
+  }
   return dd->key_dev->ops->read(dd->key_dev, 0 /* offset */, dd->key_len, key);
 }
 
@@ -51,6 +56,7 @@ static void __attribute__((noinline)) zeroize(void *p, size_t len) {
 
 enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
                                     struct mgos_vfs_dev *io_dev,
+                                    const uint8_t *key,
                                     struct mgos_vfs_dev *key_dev, int key_len,
                                     bool testing) {
   bool res = MGOS_VFS_DEV_ERR_INVAL;
@@ -64,6 +70,14 @@ enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
   dd->io_dev = io_dev;
   dd->key_dev = key_dev;
   dd->key_len = key_len;
+  if (key != NULL) {
+    dd->key = (uint8_t *) malloc(key_len);
+    if (dd->key == NULL) {
+      res = MGOS_VFS_DEV_ERR_NOMEM;
+      goto out;
+    }
+    memcpy(dd->key, key, key_len);
+  }
   {
     if ((res = encr_get_key(dd, key1)) != 0) goto out;
     if ((res = encr_get_key(dd, key2)) != 0) goto out;
@@ -91,6 +105,8 @@ enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
       }
     }
   }
+  dd->io_dev->refs++;
+  if (dd->key_dev != NULL) dd->key_dev->refs++;
   dev->dev_data = dd;
   res = MGOS_VFS_DEV_ERR_NONE;
 out:
@@ -103,24 +119,24 @@ out:
 enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
                                              const char *opts) {
   enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
-  char *dev_name = NULL, *key_dev_name = NULL, *key_dev_type = NULL,
-       *key_dev_opts = NULL;
+  uint8_t *key = NULL;
+  char *dev_name = NULL;
+  char *key_dev_name = NULL, *key_dev_type = NULL, *key_dev_opts = NULL;
   struct mgos_vfs_dev *io_dev = NULL, *key_dev = NULL;
   struct json_token algo_tok = JSON_INVALID_TOKEN;
   struct json_token kdo_json_tok = JSON_INVALID_TOKEN;
-  int key_len, testing = false;
-  json_scanf(
-      opts, strlen(opts),
-      ("{dev: %Q, algo: %T, key_dev: %Q, key_dev_type: %Q, key_dev_opts: %T, "
-       "testing: %B}"),
-      &dev_name, &algo_tok, &key_dev_name, &key_dev_type, &kdo_json_tok,
-      &testing);
+  int key_len = 0, key_str_len = 0, testing = false;
+  json_scanf(opts, strlen(opts),
+             ("{dev: %Q, algo: %T, key: %H, key_dev: %Q, "
+              "key_dev_type: %Q, key_dev_opts: %T, testing: %B}"),
+             &dev_name, &algo_tok, &key_str_len, &key, &key_dev_name,
+             &key_dev_type, &kdo_json_tok, &testing);
   if (dev_name == NULL) {
     LOG(LL_ERROR, ("Device name is required"));
     goto out;
   }
-  if (key_dev_name == NULL && key_dev_type == NULL) {
-    LOG(LL_ERROR, ("Key device name or type are required"));
+  if (((key != NULL) + (key_dev_name != NULL) + (key_dev_type != NULL)) != 1) {
+    LOG(LL_ERROR, ("One of key, key device name or type must be set"));
     goto out;
   }
   io_dev = mgos_vfs_dev_open(dev_name);
@@ -134,7 +150,7 @@ enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
       LOG(LL_ERROR, ("Unable to open key device %s", key_dev_name));
       goto out;
     }
-  } else {
+  } else if (key_dev_type != NULL) {
     const char *kdo = "";
     if (kdo_json_tok.len > 0) {
       key_dev_opts = (char *) mg_strdup_nul(
@@ -163,15 +179,23 @@ enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
     LOG(LL_ERROR, ("Unknown algo %.*s", (int) algo.len, algo.p));
     goto out;
   }
+  if (key_str_len != 0 && key_len != key_str_len) {
+    LOG(LL_ERROR, ("Length of the key provided does not match chosen algorithm "
+                   "(%d vs %d)",
+                   key_str_len, key_len));
+    goto out;
+  }
 
   LOG(LL_INFO, ("Algo %.*s, key dev %p", (int) algo.len, algo.p, key_dev));
 
-  res = encr_dev_init(dev, io_dev, key_dev, key_len, testing);
+  res = encr_dev_init(dev, io_dev, key, key_dev, key_len, testing);
 
 out:
-  if (res != 0) {
-    if (io_dev != NULL) mgos_vfs_dev_close(io_dev);
-    if (key_dev != NULL) mgos_vfs_dev_close(key_dev);
+  mgos_vfs_dev_close(io_dev);
+  mgos_vfs_dev_close(key_dev);
+  if (key != NULL) {
+    zeroize(key, key_str_len);
+    free(key);
   }
   free(dev_name);
   free(key_dev_name);
@@ -297,6 +321,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_close(struct mgos_vfs_dev *dev) {
       (mgos_vfs_dev_close(dd->io_dev) ? MGOS_VFS_DEV_ERR_NONE
                                       : MGOS_VFS_DEV_ERR_IO);
   mgos_vfs_dev_close(dd->key_dev);
+  free(dd->key);
   free(dd);
   return res;
 }

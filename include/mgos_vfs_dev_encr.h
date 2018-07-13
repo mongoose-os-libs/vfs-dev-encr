@@ -18,6 +18,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "mgos_vfs_dev.h"
 
@@ -29,6 +30,7 @@ extern "C" {
 
 enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
                                     struct mgos_vfs_dev *io_dev,
+                                    const uint8_t *key,
                                     struct mgos_vfs_dev *key_dev, int key_len,
                                     bool testing);
 
