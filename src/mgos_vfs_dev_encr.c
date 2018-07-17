@@ -59,7 +59,7 @@ enum mgos_vfs_dev_err encr_dev_init(struct mgos_vfs_dev *dev,
                                     const uint8_t *key,
                                     struct mgos_vfs_dev *key_dev, int key_len,
                                     bool testing) {
-  bool res = MGOS_VFS_DEV_ERR_INVAL;
+  enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) calloc(1, sizeof(*dd));
   uint8_t key1[ENCR_MAX_KEY_LEN], key2[ENCR_MAX_KEY_LEN];
