@@ -47,7 +47,7 @@ static enum mgos_vfs_dev_err encr_get_key(struct mgos_vfs_dev_encr_data *dd,
     memcpy(key, dd->key, dd->key_len);
     return MGOS_VFS_DEV_ERR_NONE;
   }
-  return dd->key_dev->ops->read(dd->key_dev, 0 /* offset */, dd->key_len, key);
+  return mgos_vfs_dev_read(dd->key_dev, 0 /* offset */, dd->key_len, key);
 }
 
 static void __attribute__((noinline)) zeroize(void *p, size_t len) {
@@ -219,7 +219,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_read(struct mgos_vfs_dev *dev,
                    (unsigned long) offset));
     goto out;
   }
-  if ((res = dd->io_dev->ops->read(dd->io_dev, offset, len, dst)) != 0) {
+  if ((res = mgos_vfs_dev_read(dd->io_dev, offset, len, dst)) != 0) {
     goto out;
   }
   if ((res = encr_get_key(dd, key)) != 0) goto out;
@@ -291,7 +291,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
     off += ENCR_BLOCK_SIZE;
     l += ENCR_BLOCK_SIZE;
   }
-  res = dd->io_dev->ops->write(dd->io_dev, offset, len, tmp);
+  res = mgos_vfs_dev_write(dd->io_dev, offset, len, tmp);
 out:
   if (aes_ctx_valid) mbedtls_aes_free(&aes_ctx);
   zeroize(&aes_ctx, sizeof(aes_ctx));
@@ -305,13 +305,13 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_erase(struct mgos_vfs_dev *dev,
                                                      size_t len) {
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
-  return dd->io_dev->ops->erase(dd->io_dev, offset, len);
+  return mgos_vfs_dev_erase(dd->io_dev, offset, len);
 }
 
 static size_t mgos_vfs_dev_encr_get_size(struct mgos_vfs_dev *dev) {
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
-  return dd->io_dev->ops->get_size(dd->io_dev);
+  return mgos_vfs_dev_get_size(dd->io_dev);
 }
 
 static enum mgos_vfs_dev_err mgos_vfs_dev_encr_close(struct mgos_vfs_dev *dev) {
