@@ -207,39 +207,61 @@ out:
 static enum mgos_vfs_dev_err mgos_vfs_dev_encr_read(struct mgos_vfs_dev *dev,
                                                     size_t offset, size_t len,
                                                     void *dst) {
-  size_t off = offset, l = len;
+  size_t off = offset, l, kl_bits;
   bool aes_ctx_valid = false;
   mbedtls_aes_context aes_ctx;
   uint32_t key[ENCR_MAX_KEY_LEN / sizeof(uint32_t)];
+  uint8_t *p;
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
   enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
-  if (offset % ENCR_BLOCK_SIZE != 0 || len % ENCR_BLOCK_SIZE != 0) {
+  if (offset % ENCR_BLOCK_SIZE != 0) {
     LOG(LL_ERROR, ("Unaligned access: %lu @ %lu", (unsigned long) len,
                    (unsigned long) offset));
     goto out;
   }
-  if ((res = mgos_vfs_dev_read(dd->io_dev, offset, len, dst)) != 0) {
-    goto out;
-  }
+  l = len & ~(ENCR_BLOCK_SIZE - 1);
+  p = (uint8_t *) dst;
   if ((res = encr_get_key(dd, key)) != 0) goto out;
   mbedtls_aes_init(&aes_ctx);
   aes_ctx_valid = true;
-  for (uint8_t *p = dst; l > 0;) {
+  kl_bits = ((size_t) dd->key_len) * 8;
+  if (l > 0) {
+    if ((res = mgos_vfs_dev_read(dd->io_dev, off, l, dst)) != 0) {
+      goto out;
+    }
+    while (l > 0) {
+      key[0] ^= off;
+      if (mbedtls_aes_setkey_dec(&aes_ctx, (void *) key, kl_bits) != 0) {
+        res = MGOS_VFS_DEV_ERR_IO;
+        goto out;
+      }
+      if (mbedtls_aes_crypt_ecb(&aes_ctx, MBEDTLS_AES_DECRYPT, p, p) != 0) {
+        res = MGOS_VFS_DEV_ERR_IO;
+        goto out;
+      }
+      key[0] ^= off;
+      p += ENCR_BLOCK_SIZE;
+      off += ENCR_BLOCK_SIZE;
+      l -= ENCR_BLOCK_SIZE;
+    }
+  }
+  l = len & (ENCR_BLOCK_SIZE - 1);
+  if (l > 0) {
+    uint8_t buf[ENCR_BLOCK_SIZE];
+    if ((res = mgos_vfs_dev_read(dd->io_dev, off, ENCR_BLOCK_SIZE, buf)) != 0) {
+      goto out;
+    }
     key[0] ^= off;
-    if (mbedtls_aes_setkey_dec(&aes_ctx, (void *) key,
-                               ((int) dd->key_len) * 8) != 0) {
+    if (mbedtls_aes_setkey_dec(&aes_ctx, (void *) key, kl_bits) != 0) {
       res = MGOS_VFS_DEV_ERR_IO;
       goto out;
     }
-    if (mbedtls_aes_crypt_ecb(&aes_ctx, MBEDTLS_AES_DECRYPT, p, p) != 0) {
+    if (mbedtls_aes_crypt_ecb(&aes_ctx, MBEDTLS_AES_DECRYPT, buf, buf) != 0) {
       res = MGOS_VFS_DEV_ERR_IO;
       goto out;
     }
-    key[0] ^= off;
-    p += ENCR_BLOCK_SIZE;
-    off += ENCR_BLOCK_SIZE;
-    l -= ENCR_BLOCK_SIZE;
+    memcpy(p, buf, l);
   }
   res = MGOS_VFS_DEV_ERR_NONE;
 out:
@@ -252,7 +274,7 @@ out:
 static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
                                                      size_t offset, size_t len,
                                                      const void *src) {
-  size_t off, l;
+  size_t off, l, al, kl_bits;
   bool aes_ctx_valid = false;
   mbedtls_aes_context aes_ctx;
   const uint8_t *ps;
@@ -261,7 +283,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
   struct mgos_vfs_dev_encr_data *dd =
       (struct mgos_vfs_dev_encr_data *) dev->dev_data;
   enum mgos_vfs_dev_err res = MGOS_VFS_DEV_ERR_INVAL;
-  if (offset % ENCR_BLOCK_SIZE != 0 || len % ENCR_BLOCK_SIZE != 0) {
+  if (offset % ENCR_BLOCK_SIZE != 0) {
     LOG(LL_ERROR, ("Unaligned access: %lu @ %lu", (unsigned long) len,
                    (unsigned long) offset));
     goto out;
@@ -269,17 +291,22 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
   if ((res = encr_get_key(dd, key)) != 0) goto out;
   mbedtls_aes_init(&aes_ctx);
   aes_ctx_valid = true;
-  tmp = malloc(len);
-  if (tmp == NULL) {
+  kl_bits = ((size_t) dd->key_len) * 8;
+  al = (len + ENCR_BLOCK_SIZE - 1) & ~(ENCR_BLOCK_SIZE - 1);
+  if ((tmp = malloc(len + ENCR_BLOCK_SIZE)) == NULL) {
     res = MGOS_VFS_DEV_ERR_NOMEM;
     goto out;
   }
   for (ps = src, pd = tmp, off = offset, l = 0; l < len;) {
     key[0] ^= off;
-    if (mbedtls_aes_setkey_enc(&aes_ctx, (void *) key,
-                               ((int) dd->key_len) * 8) != 0) {
+    if (mbedtls_aes_setkey_enc(&aes_ctx, (void *) key, kl_bits) != 0) {
       res = MGOS_VFS_DEV_ERR_IO;
       goto out;
+    }
+    if (len - l < ENCR_BLOCK_SIZE) {
+      memset(pd, 0, ENCR_BLOCK_SIZE);
+      memcpy(pd, ps, len - l);
+      ps = pd;
     }
     if (mbedtls_aes_crypt_ecb(&aes_ctx, MBEDTLS_AES_ENCRYPT, ps, pd) != 0) {
       res = MGOS_VFS_DEV_ERR_IO;
@@ -291,7 +318,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_write(struct mgos_vfs_dev *dev,
     off += ENCR_BLOCK_SIZE;
     l += ENCR_BLOCK_SIZE;
   }
-  res = mgos_vfs_dev_write(dd->io_dev, offset, len, tmp);
+  res = mgos_vfs_dev_write(dd->io_dev, offset, al, tmp);
 out:
   if (aes_ctx_valid) mbedtls_aes_free(&aes_ctx);
   zeroize(&aes_ctx, sizeof(aes_ctx));

@@ -4,8 +4,9 @@
 
  * AES-128/192/256 are supported (`algo: AES-nnn` parameter, default is `AES-128`).
  * Reads and writes are encrypted, erases are passed through as is.
- * Reads and writes must be aligned to 16-byte boundaries and performed in multiples of 16-byte units.
  * Encryption is performed in ECB mode, key is XORed with offset.
+ * Reads and writes must be aligned to 16-byte boundaries.
+ * Writes will be padded to 16 byte block size, so partial writes will only work for last plain-text block.
 
  _Hint:_ If you want an encrypted filesystem, [LFS](https://github.com/mongoose-os-libs/vfs-fs-lfs) will work just fine with this method while [SPIFFS](https://github.com/mongoose-os-libs/vfs-fs-spiffs) will not.
 
