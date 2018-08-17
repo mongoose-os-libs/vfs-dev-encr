@@ -125,7 +125,7 @@ enum mgos_vfs_dev_err mgos_vfs_dev_encr_open(struct mgos_vfs_dev *dev,
   struct mgos_vfs_dev *io_dev = NULL, *key_dev = NULL;
   struct json_token algo_tok = JSON_INVALID_TOKEN;
   struct json_token kdo_json_tok = JSON_INVALID_TOKEN;
-  int key_len = 0, key_str_len = 0, testing = false;
+  int key_len = 0, key_str_len = 0, testing = true;
   json_scanf(opts, strlen(opts),
              ("{dev: %Q, algo: %T, key: %H, key_dev: %Q, "
               "key_dev_type: %Q, key_dev_opts: %T, testing: %B}"),
@@ -354,9 +354,7 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_close(struct mgos_vfs_dev *dev) {
 }
 
 const struct mgos_vfs_dev_ops mgos_vfs_dev_encr_ops = {
-#ifndef MGOS_BOOT_BUILD
     .open = mgos_vfs_dev_encr_open,
-#endif
     .read = mgos_vfs_dev_encr_read,
     .write = mgos_vfs_dev_encr_write,
     .erase = mgos_vfs_dev_encr_erase,
