@@ -23,5 +23,6 @@ init_after:
 tags:
   - c
   - vfs
+  - docs:drivers:VFS (encryption)
 
 manifest_version: 2018-06-20
