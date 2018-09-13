@@ -353,6 +353,13 @@ static enum mgos_vfs_dev_err mgos_vfs_dev_encr_close(struct mgos_vfs_dev *dev) {
   return res;
 }
 
+static enum mgos_vfs_dev_err mgos_vfs_dev_encr_get_erase_sizes(
+    struct mgos_vfs_dev *dev, size_t sizes[MGOS_VFS_DEV_NUM_ERASE_SIZES]) {
+  struct mgos_vfs_dev_encr_data *dd =
+      (struct mgos_vfs_dev_encr_data *) dev->dev_data;
+  return mgos_vfs_dev_get_erase_sizes(dd->io_dev, sizes);
+}
+
 const struct mgos_vfs_dev_ops mgos_vfs_dev_encr_ops = {
     .open = mgos_vfs_dev_encr_open,
     .read = mgos_vfs_dev_encr_read,
@@ -360,6 +367,7 @@ const struct mgos_vfs_dev_ops mgos_vfs_dev_encr_ops = {
     .erase = mgos_vfs_dev_encr_erase,
     .get_size = mgos_vfs_dev_encr_get_size,
     .close = mgos_vfs_dev_encr_close,
+    .get_erase_sizes = mgos_vfs_dev_encr_get_erase_sizes,
 };
 
 bool mgos_vfs_dev_encr_init(void) {
